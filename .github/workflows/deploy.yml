@@ -1,4 +1,4 @@
-name: Deploy via SSH over Cloudflare Tunnel
+name: Build, Push, and Deploy Flask App
 
 on:
   push:
@@ -12,6 +12,15 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
+    - name: Log in to GitHub Container Registry
+      run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+    - name: Build and push Docker image
+      run: |
+        IMAGE_NAME=ghcr.io/${{ github.repository }}:latest
+        docker build -t $IMAGE_NAME .
+        docker push $IMAGE_NAME
+
     - name: Install cloudflared
       run: |
         wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
@@ -21,12 +30,32 @@ jobs:
     - name: Start Cloudflare SSH tunnel
       run: |
         cloudflared access tcp --hostname ssh.nurahsanadzim.com --url localhost:2222 &
-        sleep 5  # give it time to connect
+        sleep 5
 
-    - name: SSH and deploy
+    - name: SSH and deploy container
       env:
         WSL_KEY: ${{ secrets.WSL_KEY }}
       run: |
         echo "$WSL_KEY" > key.pem
         chmod 600 key.pem
-        ssh -o StrictHostKeyChecking=no -i key.pem -p 2222 ubuntu@localhost "echo '✅ SSH Successful!'; hostname"
+        ssh -o StrictHostKeyChecking=no -i key.pem -p 2222 ubuntu@localhost << 'EOF'
+          set -e
+          echo "✅ Connected to remote host"
+
+          IMAGE_NAME=ghcr.io/${{ github.repository }}:latest
+
+          echo "📦 Pulling latest image"
+          docker pull $IMAGE_NAME
+
+          echo "🧼 Cleaning up old container (if exists)"
+          docker stop app || true
+          docker rm app || true
+
+          echo "🚀 Running new container"
+          docker run -d \
+            --name app \
+            -p 5000:5000 \
+            $IMAGE_NAME
+
+          echo "✅ Deployed successfully!"
+        EOF
